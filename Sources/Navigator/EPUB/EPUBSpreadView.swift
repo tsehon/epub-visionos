@@ -92,7 +92,6 @@ class EPUBSpreadView: UIView, Loggable, PageView {
 
         NotificationCenter.default.addObserver(self, selector: #selector(voiceOverStatusDidChange), name: UIAccessibility.voiceOverStatusDidChangeNotification, object: nil)
 
-        updateActivityIndicator()
         loadSpread()
     }
 
@@ -499,15 +498,6 @@ extension EPUBSpreadView: UIGestureRecognizerDelegate {
 }
 
 private extension EPUBSpreadView {
-    func updateActivityIndicator() {
-        switch viewModel.theme {
-        case .dark:
-            createActivityIndicator(style: .white)
-        default:
-            createActivityIndicator(style: .gray)
-        }
-    }
-
     func createActivityIndicator(style: UIActivityIndicatorView.Style) {
         guard activityIndicatorView?.style != style else {
             return

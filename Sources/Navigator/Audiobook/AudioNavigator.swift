@@ -225,7 +225,6 @@ open class AudioNavigator: Navigator, Configurable, AudioSessionUser, Loggable {
 
     private lazy var player: AVPlayer = {
         let player = AVPlayer()
-        player.allowsExternalPlayback = false
         player.automaticallyWaitsToMinimizeStalling = false
         player.volume = Float(settings.volume)
 
