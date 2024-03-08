@@ -10,6 +10,49 @@ import SwiftSoup
 import UIKit
 import WebKit
 
+public class NavigatorViewModel: ObservableObject {
+    @Published public var navigator: EPUBNavigatorViewController?
+    @Published public var publication: Publication?
+    @Published public var locator: Locator?
+    @Published public var infoSheetVisible: Bool = false
+    @Published public var positionLabel: String = ""
+    @Published public var sectionLink: String = ""
+
+    public init() {}
+}
+
+public class ReadiumCoordinator: NSObject {
+    public var viewModel: NavigatorViewModel
+
+    public init(_ viewModel: NavigatorViewModel) {
+        self.viewModel = viewModel
+    }
+    
+    public func updatePublication(_ publication: Publication?) {
+        viewModel.publication = publication
+    }
+
+    public func updateNavigator(_ navigator: EPUBNavigatorViewController?) {
+        viewModel.navigator = navigator
+    }
+    
+    public func updateLocator(_ locator: Locator?) {
+        viewModel.locator = locator
+    }
+    
+    public func updateInfoVisible(_ isVisible: Bool) {
+        viewModel.infoSheetVisible = true
+    }
+    
+    public func updatePositionLabel(_ label: String) {
+        viewModel.positionLabel = label
+    }
+    
+    public func updateSectionLink(_ href: String) {
+        viewModel.sectionLink = href
+    }
+}
+
 public protocol EPUBNavigatorDelegate: VisualNavigatorDelegate, SelectableNavigatorDelegate {
     // MARK: - WebView Customization
 
@@ -17,10 +60,11 @@ public protocol EPUBNavigatorDelegate: VisualNavigatorDelegate, SelectableNaviga
 
     // MARK: - Deprecated
 
-    // Implement `NavigatorDelegate.navigator(didTapAt:)` instead.
+    // TODO: Implement `NavigatorDelegate.navigator(didTapAt:)` instead.
     func middleTapHandler()
 
-    // Implement `NavigatorDelegate.navigator(locationDidChange:)` instead, to save the last read location.
+    // TODO: Implement `NavigatorDelegate.navigator(locationDidChange:)` instead, to save the last read location.
+    func navigator(_ navigator: Navigator, locationDidChange locator: Locator)
     func willExitPublication(documentIndex: Int, progression: Double?)
     func didChangedDocumentPage(currentDocumentIndex: Int)
     func didNavigateViaInternalLinkTap(to documentIndex: Int)
@@ -32,18 +76,46 @@ public protocol EPUBNavigatorDelegate: VisualNavigatorDelegate, SelectableNaviga
 public extension EPUBNavigatorDelegate {
     func navigator(_ navigator: EPUBNavigatorViewController, setupUserScripts userContentController: WKUserContentController) {}
 
+    /// Called when the current position in the publication changed. You should save the locator here to restore the
+    /// last read page.
+    func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {}
+    
     func middleTapHandler() {}
     func willExitPublication(documentIndex: Int, progression: Double?) {}
     func didChangedDocumentPage(currentDocumentIndex: Int) {}
     func didNavigateViaInternalLinkTap(to documentIndex: Int) {}
     func presentError(_ error: NavigatorError) {}
+    
+    /// Called when the navigator jumps to an explicit location, which might break the linear reading progression.
+    ///
+    /// For example, it is called when clicking on internal links or programmatically calling `go()`, but not when
+    /// turning pages.
+    ///
+    /// You can use this callback to implement a navigation history by differentiating between continuous and
+    /// discontinuous moves.
+    func navigator(_ navigator: Navigator, didJumpTo locator: Locator) {}
+
+    /// Called when an error must be reported to the user.
+    func navigator(_ navigator: Navigator, presentError error: NavigatorError) {}
+
+    /// Called when the user tapped an external URL. The default implementation opens the URL with the default browser.
+    func navigator(_ navigator: Navigator, presentExternalURL url: URL) {}
+
+    /// Called when the user taps on a link referring to a note.
+    ///
+    /// Return `true` to navigate to the note, or `false` if you intend to present the
+    /// note yourself, using its `content`. `link.type` contains information about the
+    /// format of `content` and `referrer`, such as `text/html`.
+    func navigator(_ navigator: Navigator, shouldNavigateToNoteAt link: Link, content: String, referrer: String?) -> Bool {
+        return true
+    }
 }
 
 public typealias EPUBContentInsets = (top: CGFloat, bottom: CGFloat)
 
 open class EPUBNavigatorViewController: UIViewController,
     VisualNavigator, SelectableNavigator, DecorableNavigator,
-    Configurable, Loggable
+    Configurable, Loggable, ObservableObject
 {
     public enum EPUBError: Error {
         /// The provided publication is restricted. Check that any DRM was
@@ -102,7 +174,7 @@ open class EPUBNavigatorViewController: UIViewController,
 
         /// Default user settings.
         public var userSettings: UserSettings
-
+        
         public init(
             userSettings: UserSettings = UserSettings(),
             preferences: EPUBPreferences = .empty,
@@ -245,6 +317,7 @@ open class EPUBNavigatorViewController: UIViewController,
 
     private let viewModel: EPUBNavigatorViewModel
     public var publication: Publication { viewModel.publication }
+    public let coordinator: ReadiumCoordinator?
 
     var config: Configuration { viewModel.config }
 
@@ -259,12 +332,14 @@ open class EPUBNavigatorViewController: UIViewController,
     ///   - config: Additional navigator configuration.
     ///   - httpServer: HTTP server used to serve the publication resources to
     ///   the web views.
+    ///   - coordinator: Allows calling of parent functions
     public convenience init(
         publication: Publication,
         initialLocation: Locator?,
         readingOrder: [Link]? = nil,
         config: Configuration = .init(),
-        httpServer: HTTPServer
+        httpServer: HTTPServer,
+        coordinator: ReadiumCoordinator?
     ) throws {
         precondition(readingOrder.map { !$0.isEmpty } ?? true)
 
@@ -288,7 +363,8 @@ open class EPUBNavigatorViewController: UIViewController,
             // provided with a different reading order, we should assume the
             // positions list is empty, and also not compute the
             // totalProgression when calculating the current locator.
-            (readingOrder != nil) ? [] : publication.positionsByReadingOrder
+            (readingOrder != nil) ? [] : publication.positionsByReadingOrder,
+            coordinator: coordinator
         )
     }
 
@@ -297,7 +373,8 @@ open class EPUBNavigatorViewController: UIViewController,
         publication: Publication,
         initialLocation: Locator? = nil,
         resourcesServer: ResourcesServer,
-        config: Configuration = .init()
+        config: Configuration = .init(),
+        coordinator: ReadiumCoordinator?
     ) {
         precondition(!publication.isRestricted, "The provided publication is restricted. Check that any DRM was properly unlocked using a Content Protection.")
 
@@ -309,7 +386,8 @@ open class EPUBNavigatorViewController: UIViewController,
             ),
             initialLocation: initialLocation,
             readingOrder: publication.readingOrder,
-            positionsByReadingOrder: publication.positionsByReadingOrder
+            positionsByReadingOrder: publication.positionsByReadingOrder,
+            coordinator: coordinator
         )
 
         userSettings = config.userSettings
@@ -319,12 +397,14 @@ open class EPUBNavigatorViewController: UIViewController,
         viewModel: EPUBNavigatorViewModel,
         initialLocation: Locator?,
         readingOrder: [Link],
-        positionsByReadingOrder: [[Locator]]
+        positionsByReadingOrder: [[Locator]],
+        coordinator: ReadiumCoordinator?
     ) {
         self.viewModel = viewModel
         self.initialLocation = initialLocation
         self.readingOrder = readingOrder
         self.positionsByReadingOrder = positionsByReadingOrder
+        self.coordinator = coordinator
 
         super.init(nibName: nil, bundle: nil)
 
@@ -730,10 +810,11 @@ open class EPUBNavigatorViewController: UIViewController,
             let delegate = self.delegate,
             let location = self.currentLocation,
             location != self.notifiedCurrentLocation
+            //location.locations.position != self.notifiedCurrentLocation?.locations.position
         else {
             return
         }
-
+        
         self.notifiedCurrentLocation = location
         delegate.navigator(self, locationDidChange: location)
     }
